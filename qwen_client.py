@@ -6,10 +6,14 @@ Qwen API客户端
 """
 
 # ==================== 配置区域 ====================
-# 请在此处设置您的 API Key
+# API Key 通过环境变量 DASHSCOPE_API_KEY 设置
 # 获取API Key：https://www.alibabacloud.com/help/zh/model-studio/get-api-key
-DASHSCOPE_API_KEY = "sk-6f451d6d16e14c28877ef22b5d16cc69"  # 请替换为您的实际API Key
-
+# 
+# 设置方法：
+# 1. 创建 .env 文件（已添加到 .gitignore，不会被提交）
+# 2. 在 .env 文件中添加：DASHSCOPE_API_KEY=your-api-key-here
+# 3. 或者直接在终端设置：export DASHSCOPE_API_KEY=your-api-key-here
+#
 # 区域设置（如果使用北京地域，取消下面的注释并注释掉新加坡地域的URL）
 BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # 北京地域
 # BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"  # 新加坡地域
@@ -22,11 +26,24 @@ IMAGE_MAX_SIZE = 1280  # 最大尺寸（像素），720P分辨率，确保框的
 import base64
 import io
 import json
+import os
 import re
 import time
 import cv2
 from PIL import Image
 from openai import OpenAI
+
+# 尝试加载 .env 文件（如果存在）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # 自动加载 .env 文件
+except ImportError:
+    # 如果没有安装 python-dotenv，跳过（仍可使用系统环境变量）
+    pass
+
+# 尝试从环境变量读取 API Key，如果没有则使用默认值（用于向后兼容）
+# 强烈建议使用环境变量，不要在此处硬编码 API Key
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 
 
 class QwenClient:
@@ -65,8 +82,14 @@ class QwenClient:
         self.image_quality = image_quality if image_quality is not None else IMAGE_QUALITY
         self.image_max_size = image_max_size if image_max_size is not None else IMAGE_MAX_SIZE
         
-        if not self.api_key or self.api_key == "your-api-key-here":
-            raise ValueError("API Key未设置，请在 qwen_client.py 文件顶部设置 DASHSCOPE_API_KEY")
+        if not self.api_key or self.api_key == "your-api-key-here" or self.api_key == "":
+            raise ValueError(
+                "API Key未设置！\n"
+                "请通过以下方式之一设置：\n"
+                "1. 创建 .env 文件并添加：DASHSCOPE_API_KEY=your-api-key-here\n"
+                "2. 或在终端设置环境变量：export DASHSCOPE_API_KEY=your-api-key-here\n"
+                "获取API Key：https://www.alibabacloud.com/help/zh/model-studio/get-api-key"
+            )
         
         # 初始化OpenAI客户端
         self.client = OpenAI(

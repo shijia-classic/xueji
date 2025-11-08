@@ -26,15 +26,39 @@ pip install -r requirements.txt
 
 2. 设置API Key：
 
-打开 `qwen_client.py` 文件，在文件顶部的配置区域设置您的 API Key：
+**方法一：使用 .env 文件（推荐）**
 
-```python
-# ==================== 配置区域 ====================
-DASHSCOPE_API_KEY = "your-api-key-here"  # 请替换为您的实际API Key
-# ===================================================
+创建 `.env` 文件（项目根目录），添加以下内容：
+
+```bash
+DASHSCOPE_API_KEY=your-api-key-here
+```
+
+**方法二：使用环境变量**
+
+在终端中设置环境变量：
+
+```bash
+# macOS/Linux
+export DASHSCOPE_API_KEY=your-api-key-here
+
+# Windows (PowerShell)
+$env:DASHSCOPE_API_KEY="your-api-key-here"
 ```
 
 获取API Key：https://www.alibabacloud.com/help/zh/model-studio/get-api-key
+
+> ⚠️ **安全提示**：`.env` 文件已添加到 `.gitignore`，不会被提交到 Git 仓库。请勿在代码中硬编码 API Key！
+
+3. 验证配置（可选）：
+
+运行测试脚本检查 API Key 是否正确配置：
+
+```bash
+python test_env.py
+```
+
+如果配置正确，会显示 API Key 的部分信息（已脱敏）；如果未配置，会显示详细的设置说明。
 
 ## 使用方法
 
@@ -91,8 +115,10 @@ python main.py
 .
 ├── main.py              # 主程序文件（视频捕获、题目检测、状态显示）
 ├── qwen_client.py      # Qwen API客户端（题目识别、作答检测、答案判断）
+├── test_env.py         # 环境变量配置测试脚本
 ├── requirements.txt     # 依赖包列表
-├── .gitignore          # Git忽略文件
+├── .gitignore          # Git忽略文件（包含 .env）
+├── .env                 # 环境变量文件（需自行创建，不提交到Git）
 └── README.md           # 说明文档
 ```
 

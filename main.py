@@ -272,7 +272,6 @@ def main():
         detector.run()
     except ValueError as e:
         print(f"错误: {e}")
-        print("请在 qwen_client.py 文件顶部设置 DASHSCOPE_API_KEY")
 
 
 if __name__ == "__main__":
