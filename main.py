@@ -107,20 +107,54 @@ class AIProjectionLearningAssistant:
                 target_question_id = decision.get("target_question_id")
                 projection_content = decision.get("projection_content")
                 
-                # 对于CHECK_ANSWER的情况，处理投影内容
+                # 处理CHECK_ANSWER（不依赖projection_content）
                 if decision_type == "CHECK_ANSWER":
-                    is_correct = decision.get("is_correct", True)
-                    if is_correct:
-                        # 答对了，使用特殊标记表示需要绘制对号
-                        projection_content = "__DRAW_CHECKMARK__"
-                    else:
-                        # 答错了，使用error_analysis作为投影内容
-                        error_analysis = decision.get("error_analysis", "")
-                        if error_analysis:
-                            projection_content = error_analysis
+                    # 检查所有已作答的题目
+                    checked_questions = decision.get("checked_questions", [])
+                    if not checked_questions:
+                        # 兼容旧格式：如果checked_questions不存在，尝试使用旧的格式
+                        target_question_id_old = decision.get("target_question_id")
+                        is_correct_old = decision.get("is_correct")
+                        if target_question_id_old and is_correct_old is not None:
+                            checked_questions = [{
+                                "question_id": target_question_id_old,
+                                "is_correct": is_correct_old,
+                                "error_analysis": decision.get("error_analysis", "")
+                            }]
+                    
+                    # 为每个已检查的题目显示结果
+                    for checked_q in checked_questions:
+                        question_id = checked_q.get("question_id")
+                        is_correct = checked_q.get("is_correct", True)
+                        error_analysis = checked_q.get("error_analysis", "")
+                        
+                        # 找到题目的位置
+                        target_question = None
+                        for question in questions:
+                            if question.get("id") == question_id:
+                                target_question = question
+                                break
+                        
+                        if target_question and target_question.get("bbox_pixel"):
+                            bbox = target_question["bbox_pixel"]
+                            x1, y1, x2, y2 = bbox
+                            
+                            if is_correct:
+                                # 答对了，绘制对号图形
+                                checkmark_x = x1
+                                checkmark_y = y2 + 30
+                                canvas = self.draw_checkmark(canvas, (checkmark_x, checkmark_y), size=30, color=(0, 255, 0))
+                            else:
+                                # 答错了，显示错误分析文字
+                                if error_analysis:
+                                    text_color = (255, 255, 255)  # 白色
+                                    text_x = x1
+                                    text_y = y2 + 20
+                                    canvas = self.put_text(canvas, error_analysis, (text_x, text_y),
+                                                 font_size=18, color=text_color)
                 
                 # 显示投影内容（如果有）
-                if projection_content:
+                elif projection_content:
                     if decision_type == "PROJECT_HINT" and target_question_id:
                         # 找到目标题目的位置（通过"第xx题"格式匹配）
                         target_question = None
@@ -145,50 +179,6 @@ class AIProjectionLearningAssistant:
                             text_y = h // 2
                             canvas = self.put_text(canvas, projection_content, (text_x, text_y),
                                          font_size=18, color=(0, 255, 255))  # 青色
-                    
-                    elif decision_type == "CHECK_ANSWER" and target_question_id:
-                        # 找到目标题目的位置（通过"第xx题"格式匹配）
-                        target_question = None
-                        for question in questions:
-                            # 直接通过id匹配（id格式为"第xx题"）
-                            question_id = question.get("id", "")
-                            if question_id == target_question_id:
-                                target_question = question
-                                break
-                        
-                        if target_question and target_question.get("bbox_pixel"):
-                            bbox = target_question["bbox_pixel"]
-                            x1, y1, x2, y2 = bbox
-                            
-                            # 判断对错，显示不同内容
-                            is_correct = decision.get("is_correct")
-                            if is_correct:
-                                # 答对了，绘制对号图形
-                                checkmark_x = x1
-                                checkmark_y = y2 + 30
-                                canvas = self.draw_checkmark(canvas, (checkmark_x, checkmark_y), size=30, color=(0, 255, 0))
-                            else:
-                                # 答错了，显示错误分析文字
-                                text_color = (255, 255, 255)  # 白色
-                                text_x = x1
-                                text_y = y2 + 20
-                                canvas = self.put_text(canvas, projection_content, (text_x, text_y),
-                                             font_size=18, color=text_color)
-                        else:
-                            # 如果找不到题目位置，在画面中央显示
-                            is_correct = decision.get("is_correct")
-                            if is_correct:
-                                # 答对了，绘制对号图形
-                                checkmark_x = w // 2 - 15
-                                checkmark_y = h // 2
-                                canvas = self.draw_checkmark(canvas, (checkmark_x, checkmark_y), size=30, color=(0, 255, 0))
-                            else:
-                                # 答错了，显示错误分析文字
-                                text_color = (255, 255, 255)  # 白色
-                                text_x = w // 2 - 100
-                                text_y = h // 2
-                                canvas = self.put_text(canvas, projection_content, (text_x, text_y),
-                                         font_size=18, color=text_color)
                     
                     elif decision_type == "CLEAR_PROJECTION":
                         # 清除投影：不显示投影内容，reason会在右侧显示

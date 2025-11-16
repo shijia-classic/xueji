@@ -103,11 +103,16 @@ class ReasoningAgent:
 输出JSON格式：
 {{
   "decision_type": "PROJECT_HINT" | "NO_INTERACTION" | "CHECK_ANSWER" | "CLEAR_PROJECTION",
-  "target_question_id": "目标题目标识（仅当PROJECT_HINT或CHECK_ANSWER时，使用'第xx题'格式，例如：'第1题'、'第2题'等）",
+  "target_question_id": "目标题目标识（仅当PROJECT_HINT时，使用'第xx题'格式，例如：'第1题'、'第2题'等）",
   "hint_level": 1-3（仅当PROJECT_HINT时）,
   "projection_content": "投影内容（仅当PROJECT_HINT时，必须在10个字以内，精简到最核心信息）",
-  "is_correct": true/false（仅当CHECK_ANSWER时）,
-  "error_analysis": "错误分析（仅当CHECK_ANSWER且is_correct为false时，15字以内，将作为投影内容显示）",
+  "checked_questions": [
+    {{
+      "question_id": "第xx题",
+      "is_correct": true/false,
+      "error_analysis": "错误分析（仅当is_correct为false时，15字以内，将作为投影内容显示）"
+    }}
+  ]（仅当CHECK_ANSWER时，包含所有已作答完成的题目检查结果）,
   "reason": "原因说明（仅当NO_INTERACTION或CLEAR_PROJECTION时）",
   "updated_question_states": {{
     "第xx题": {{
@@ -124,11 +129,12 @@ class ReasoningAgent:
 1. **如果is_writing为true**：必须返回decision_type为"CLEAR_PROJECTION"，reason为"用户正在书写"
 2. **如果active_question_id为null**：必须返回"NO_INTERACTION"，reason为"无活跃题目"
 3. **如果time_on_active_question_seconds < 30秒**：通常返回"NO_INTERACTION"，reason为"停留时间较短，等待用户继续"
-4. **如果is_active_question_completed为true且有作答内容**：可以考虑"CHECK_ANSWER"，但只有在用户明显完成题目后才检查
+4. **CHECK_ANSWER决策**：当检测到画面中有已作答完成的题目时（is_active_question_completed为true或有明确的作答内容），返回"CHECK_ANSWER"，并在checked_questions数组中包含**所有已作答完成的题目**的检查结果。不要只检查一道题，要检查画面中所有有作答内容的题目。
 5. **如果需要提供提示**：只有在time_on_active_question_seconds >= 30秒且用户没有任何进展时才考虑"PROJECT_HINT"
 6. **默认选择**：当不确定时，优先选择"NO_INTERACTION"，保持沉默，不打扰用户
 7. **所有时间戳使用ISO 8601格式**
 8. **target_question_id格式**：必须使用"第xx题"格式，例如页面上的第1题，则target_question_id为"第1题"；第2题则为"第2题"
+9. **checked_questions格式**：当decision_type为"CHECK_ANSWER"时，必须检查感知报告中user_attempt_content中所有有内容的题目，为每个题目返回question_id、is_correct和error_analysis
 
 记住：
 1. 你的目标是帮助用户，而不是打扰用户。只有在用户真正需要帮助时才投影。
