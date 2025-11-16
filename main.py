@@ -29,13 +29,18 @@ class AIProjectionLearningAssistant:
         self.perception_agent = PerceptionAgent()  # 使用qwen3-vl-plus
         self.reasoning_agent = ReasoningAgent()  # 使用qwen3-vl-plus
         
-        # 当前感知报告和决策结果
+        # 当前感知报告（用于绘制投影时获取最新感知数据）
         self.current_perception_report = None
-        self.current_decision = None
         self.data_lock = threading.Lock()
         
-        # 推理Agent的反馈（传递给下一次感知）
-        self.reasoning_feedback = None
+        # 题目学习状态（从推理Agent获取并维护）
+        self.question_states = {}  # 格式：{"第1页-第1题": {"hint_level": 0, "status": "in_progress", ...}, ...}
+        
+        # 感知状态（从感知Agent获取并维护，用于比较变化）
+        self.perception_states = {}  # 格式：{"current_page_id": "...", "questions_on_page": [...], "user_attempt_content": {...}, ...}
+        
+        # 推理决策状态（从推理Agent获取并维护，用于投影显示）
+        self.decision_states = {}  # 格式：{"decision_type": "...", "target_question_id": "...", "projection_content": "...", "updated_question_states": {...}, ...}
         
         # 检测状态
         self.is_analyzing = False
@@ -80,7 +85,7 @@ class AIProjectionLearningAssistant:
         Args:
             frame: 原始视频帧
             perception_report: 感知报告
-            decision: 推理决策结果
+            decision: 推理决策结果（全局维护的决策状态）
             
         Returns:
             np.ndarray: 绘制后的画布
@@ -106,60 +111,86 @@ class AIProjectionLearningAssistant:
                 decision_type = decision.get("decision_type")
                 target_question_id = decision.get("target_question_id")
                 projection_content = decision.get("projection_content")
+            
+            # 显示所有已检查题目的结果（无论decision_type是什么，只要题目有检查结果就显示）
+            # 这样可以保留对号和错误标记的投影
+            with self.data_lock:
+                all_question_states = self.question_states.copy()
+            
+            # 为每个已检查的题目显示结果（只显示last_action_type为check_correct或check_incorrect的）
+            for question_id, state in all_question_states.items():
+                last_action_type = state.get("last_action_type")
                 
-                # 处理CHECK_ANSWER（不依赖projection_content）
-                if decision_type == "CHECK_ANSWER":
-                    # 检查所有已作答的题目
-                    checked_questions = decision.get("checked_questions", [])
-                    if not checked_questions:
-                        # 兼容旧格式：如果checked_questions不存在，尝试使用旧的格式
-                        target_question_id_old = decision.get("target_question_id")
-                        is_correct_old = decision.get("is_correct")
-                        if target_question_id_old and is_correct_old is not None:
-                            checked_questions = [{
-                                "question_id": target_question_id_old,
-                                "is_correct": is_correct_old,
-                                "error_analysis": decision.get("error_analysis", "")
-                            }]
+                # 只处理检查答案的操作
+                if last_action_type in ["check_correct", "check_incorrect"]:
+                    is_correct = state.get("is_correct", True)
+                    error_analysis = state.get("error_analysis", "")
                     
-                    # 为每个已检查的题目显示结果
-                    for checked_q in checked_questions:
-                        question_id = checked_q.get("question_id")
-                        is_correct = checked_q.get("is_correct", True)
-                        error_analysis = checked_q.get("error_analysis", "")
-                        
-                        # 找到题目的位置
-                        target_question = None
-                        for question in questions:
-                            if question.get("id") == question_id:
-                                target_question = question
-                                break
-                        
-                        if target_question and target_question.get("bbox_pixel"):
+                    # 找到题目的位置
+                    target_question = None
+                    for question in questions:
+                        if question.get("id") == question_id:
+                            target_question = question
+                            break
+                    
+                    if target_question:
+                        # 优先使用bbox_pixel，如果没有则从bbox转换
+                        if target_question.get("bbox_pixel"):
                             bbox = target_question["bbox_pixel"]
                             x1, y1, x2, y2 = bbox
-                            
-                            if is_correct:
-                                # 答对了，绘制对号图形
-                                checkmark_x = x1
-                                checkmark_y = y2 + 30
-                                canvas = self.draw_checkmark(canvas, (checkmark_x, checkmark_y), size=30, color=(0, 255, 0))
-                            else:
-                                # 答错了，显示错误分析文字
-                                if error_analysis:
-                                    text_color = (255, 255, 255)  # 白色
-                                    text_x = x1
-                                    text_y = y2 + 20
-                                    canvas = self.put_text(canvas, error_analysis, (text_x, text_y),
-                                                 font_size=18, color=text_color)
+                        elif target_question.get("bbox"):
+                            # 如果只有归一化坐标，需要转换
+                            bbox_norm = target_question["bbox"]
+                            h_frame, w_frame = frame.shape[:2]
+                            x1 = int(bbox_norm[0] * w_frame)
+                            y1 = int(bbox_norm[1] * h_frame)
+                            x2 = int(bbox_norm[2] * w_frame)
+                            y2 = int(bbox_norm[3] * h_frame)
+                        else:
+                            continue
+                        
+                        # 验证坐标是否合理（应该在图像范围内）
+                        if x1 < 0 or y1 < 0 or x2 > w or y2 > h or x1 >= x2 or y1 >= y2:
+                            # 坐标异常，跳过绘制
+                            continue
+                        
+                        if is_correct:
+                            # 答对了，绘制对号图形
+                            # 投影位置：题目左下方，x坐标不变
+                            checkmark_x = x1  # x坐标不变，使用题目左边界
+                            checkmark_y = y2 - 10  # 题目底部向上10像素
+                            # 确保坐标在图像范围内
+                            checkmark_x = max(0, min(checkmark_x, w - 50))
+                            checkmark_y = max(0, min(checkmark_y, h - 50))
+                            canvas = self.draw_checkmark(canvas, (checkmark_x, checkmark_y), size=30, color=(0, 255, 0))
+                        else:
+                            # 答错了，显示错误分析文字
+                            if error_analysis:
+                                text_color = (255, 255, 255)  # 白色
+                                # 投影位置：题目左下方，x坐标不变
+                                text_x = x1  # x坐标不变，使用题目左边界
+                                text_y = y2 - 5  # 题目底部向上5像素
+                                # 确保坐标在图像范围内
+                                text_x = max(0, min(text_x, w - 200))
+                                text_y = max(0, min(text_y, h - 1))
+                                canvas = self.put_text(canvas, error_analysis, (text_x, text_y),
+                                             font_size=18, color=text_color)
+            
+            # 根据决策显示其他投影内容（提示等）
+            if decision:
+                decision_type = decision.get("decision_type")
+                target_question_id = decision.get("target_question_id")
+                projection_content = decision.get("projection_content")
+                
+                # CHECK_ANSWER的投影已经在上面统一处理了，这里不需要重复处理
                 
                 # 显示投影内容（如果有）
-                elif projection_content:
+                if projection_content:
                     if decision_type == "PROJECT_HINT" and target_question_id:
-                        # 找到目标题目的位置（通过"第xx题"格式匹配）
+                        # 找到目标题目的位置（通过"第xx页-第xx题"格式匹配）
                         target_question = None
                         for question in questions:
-                            # 直接通过id匹配（id格式为"第xx题"）
+                            # 直接通过id匹配（id格式为"第xx页-第xx题"）
                             question_id = question.get("id", "")
                             if question_id == target_question_id:
                                 target_question = question
@@ -168,9 +199,12 @@ class AIProjectionLearningAssistant:
                         if target_question and target_question.get("bbox_pixel"):
                             bbox = target_question["bbox_pixel"]
                             x1, y1, x2, y2 = bbox
-                            # 在题目下方显示提示内容
-                            text_x = x1
-                            text_y = y2 + 20
+                            # 在题目右侧显示提示内容，避免覆盖作答区域
+                            text_x = x2 + 20  # 题目右侧20像素
+                            text_y = y1 + 15  # 题目顶部稍微下移
+                            # 确保坐标在图像范围内
+                            text_x = max(0, min(text_x, w - 200))
+                            text_y = max(0, min(text_y, h - 1))
                             canvas = self.put_text(canvas, projection_content, (text_x, text_y),
                                          font_size=18, color=(0, 255, 255))  # 青色
                         else:
@@ -237,7 +271,6 @@ class AIProjectionLearningAssistant:
             
             return canvas
         except Exception as e:
-            print(f"[ERROR] draw_projection出错: {e}")
             traceback.print_exc()
             # 返回原始帧作为fallback
             return frame.copy() if frame is not None else np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -346,62 +379,197 @@ class AIProjectionLearningAssistant:
                             self.is_analyzing = True
                         
                         try:
-                            print(f"[LOG] 开始分析场景，时间: {time.time()}")
-                            
-                            # 获取上一次的推理反馈
+                            # 步骤1：感知Agent分析场景
+                            # 获取上一次的感知状态
                             with self.data_lock:
-                                last_feedback = self.reasoning_feedback
-                            print(f"[LOG] 获取推理反馈: {last_feedback is not None}")
+                                previous_perception_state = self.perception_states.copy() if self.perception_states else None
                             
-                            # 步骤1：感知Agent分析场景（传入推理Agent的反馈）
-                            print("[LOG] 调用感知Agent...")
-                            perception_report = self.perception_agent.analyze_scene(process_frame, last_feedback)
-                            print(f"[LOG] 感知Agent返回: {perception_report is not None}")
+                            perception_report = self.perception_agent.analyze_scene(process_frame, previous_perception_state)
                             if perception_report:
-                                print(f"[LOG] 感知报告 - 活跃题目: {perception_report.get('active_question_id')}, 书写中: {perception_report.get('is_writing')}")
+                                # 验证感知报告格式是否正确
+                                if not isinstance(perception_report, dict):
+                                    perception_report = None
+                                elif "questions_on_page" in perception_report:
+                                    # 验证questions_on_page格式
+                                    questions = perception_report.get("questions_on_page", [])
+                                    if not isinstance(questions, list):
+                                        perception_report = None
+                                    else:
+                                        # 验证每个题目是否有bbox_pixel
+                                        for q in questions:
+                                            if not isinstance(q, dict) or "bbox_pixel" not in q or q.get("bbox_pixel") is None:
+                                                perception_report = None
+                                                break
+                                
+                                if perception_report:
+                                    # 更新全局感知状态（只有格式正确时才更新）
+                                    with self.data_lock:
+                                        old_state_keys = set(self.perception_states.keys()) if self.perception_states else set()
+                                        self.perception_states = perception_report.copy()
+                                        new_state_keys = set(self.perception_states.keys())
+                                        changed_keys = new_state_keys - old_state_keys if old_state_keys else new_state_keys
+                                        
+                                        print(f"[LOG] ========== 更新全局感知状态 ==========")
+                                        print(f"[LOG] 感知状态字段: {sorted(self.perception_states.keys())}")
+                                        if changed_keys:
+                                            print(f"[LOG] 新增/变化的字段: {sorted(changed_keys)}")
+                                        
+                                        # 详细输出感知状态内容
+                                        print(f"[LOG] --- 感知状态详情 ---")
+                                        print(f"[LOG] timestamp: {self.perception_states.get('timestamp')}")
+                                        print(f"[LOG] current_page_id: {self.perception_states.get('current_page_id')}")
+                                        print(f"[LOG] active_question_id: {self.perception_states.get('active_question_id')}")
+                                        print(f"[LOG] is_writing: {self.perception_states.get('is_writing')}")
+                                        print(f"[LOG] is_active_question_completed: {self.perception_states.get('is_active_question_completed')}")
+                                        print(f"[LOG] time_on_active_question_seconds: {self.perception_states.get('time_on_active_question_seconds')}")
+                                        
+                                        if "questions_on_page" in self.perception_states:
+                                            questions = self.perception_states['questions_on_page']
+                                            print(f"[LOG] 题目数量: {len(questions)}")
+                                            for q in questions:
+                                                q_id = q.get('id', 'unknown')
+                                                q_text = q.get('text', '')[:30] + '...' if len(q.get('text', '')) > 30 else q.get('text', '')
+                                                q_bbox = q.get('bbox', [])
+                                                q_bbox_pixel = q.get('bbox_pixel', [])
+                                                print(f"[LOG]   - {q_id}: text='{q_text}', bbox={q_bbox}, bbox_pixel={q_bbox_pixel}")
+                                        
+                                        if "user_attempt_content" in self.perception_states:
+                                            attempt_content = self.perception_states['user_attempt_content']
+                                            print(f"[LOG] 已作答题目: {list(attempt_content.keys())}")
+                                            for q_id, content in attempt_content.items():
+                                                content_preview = content[:50] + '...' if len(content) > 50 else content
+                                                print(f"[LOG]   - {q_id}: {content_preview}")
+                                        
+                                        print(f"[LOG] ======================================")
                             
                             # 步骤2：推理Agent做出决策（传入图像以便更准确的判断）
                             decision = None
                             if perception_report:
-                                print("[LOG] 调用推理Agent...")
-                                decision = self.reasoning_agent.make_decision(perception_report, process_frame)
-                                print(f"[LOG] 推理Agent返回: {decision is not None}")
-                                if decision:
-                                    print(f"[LOG] 决策类型: {decision.get('decision_type')}")
+                                # 将main中维护的状态传递给推理Agent
+                                with self.data_lock:
+                                    # 将main中维护的状态同步到推理Agent
+                                    self.reasoning_agent.question_states = self.question_states.copy()
                                 
-                                # 提取推理Agent的反馈信息（用于下一次感知）
-                                if decision and "feedback_to_perception" in decision:
-                                    feedback = decision.get("feedback_to_perception")
-                                    if feedback:
-                                        # 构建反馈信息，包含题目状态
-                                        updated_states = decision.get("updated_question_states", {})
-                                        reasoning_feedback = {
-                                            "feedback_to_perception": feedback,
-                                            "updated_question_states": updated_states,
-                                            "last_decision_type": decision.get("decision_type"),
-                                            "last_target_question_id": decision.get("target_question_id")
-                                        }
-                                        print(f"[LOG] 构建推理反馈成功")
-                                    else:
-                                        reasoning_feedback = None
-                                else:
-                                    reasoning_feedback = None
-                            else:
-                                reasoning_feedback = None
-                                print("[LOG] 感知报告为空，跳过推理Agent")
+                                decision = self.reasoning_agent.make_decision(perception_report, process_frame)
+                                if decision:
+                                    # 检查决策是否有变化
+                                    decision_type = decision.get("decision_type")
+                                    has_changed = False
+                                    updated_states = decision.get("updated_question_states", {})
+                                    
+                                    with self.data_lock:
+                                        # 比较决策是否发生变化
+                                        old_decision_type = self.decision_states.get("decision_type")
+                                        old_target_question_id = self.decision_states.get("target_question_id")
+                                        old_projection_content = self.decision_states.get("projection_content")
+                                        
+                                        new_target_question_id = decision.get("target_question_id")
+                                        new_projection_content = decision.get("projection_content")
+                                        
+                                        # 检查决策类型、目标题目或投影内容是否变化
+                                        if (decision_type != old_decision_type or 
+                                            new_target_question_id != old_target_question_id or
+                                            new_projection_content != old_projection_content):
+                                            has_changed = True
+                                        
+                                        # 检查updated_question_states是否有变化
+                                        if updated_states:
+                                            # 比较状态变化（检查是否有新增或修改的状态）
+                                            # 应该与self.question_states比较，而不是decision_states中的updated_question_states
+                                            for question_id, new_state in updated_states.items():
+                                                old_state = self.question_states.get(question_id)
+                                                # 比较关键字段
+                                                if (old_state is None or
+                                                    old_state.get("last_action_type") != new_state.get("last_action_type") or
+                                                    old_state.get("status") != new_state.get("status") or
+                                                    old_state.get("is_correct") != new_state.get("is_correct")):
+                                                    has_changed = True
+                                                    break
+                                        
+                                        # 如果决策有变化，更新全局决策状态
+                                        if has_changed:
+                                            old_decision_type_for_log = self.decision_states.get("decision_type") if self.decision_states else None
+                                            old_question_count = len(self.question_states)
+                                            
+                                            self.decision_states = decision.copy()
+                                            
+                                            # 更新题目状态（从推理Agent返回的updated_question_states）
+                                            if updated_states:
+                                                # 合并更新状态，保留未更新的题目状态
+                                                for question_id, new_state in updated_states.items():
+                                                    old_state = self.question_states.get(question_id)
+                                                    
+                                                    # 合并状态：保留旧状态中不在新状态中的字段，用新状态覆盖
+                                                    if old_state:
+                                                        merged_state = old_state.copy()
+                                                        merged_state.update(new_state)
+                                                        self.question_states[question_id] = merged_state
+                                                    else:
+                                                        self.question_states[question_id] = new_state.copy()
+                                        
+                                        # 无论是否有变化，都打印全局推理决策状态信息
+                                        print(f"[LOG] ========== 推理Agent返回 - 全局推理决策状态 ==========")
+                                        print(f"[LOG] 决策类型: {old_decision_type} -> {decision_type}")
+                                        print(f"[LOG] --- 本次决策详情 ---")
+                                        print(f"[LOG] decision_type: {decision_type}")
+                                        print(f"[LOG] target_question_id: {decision.get('target_question_id')}")
+                                        print(f"[LOG] projection_content: {decision.get('projection_content')}")
+                                        print(f"[LOG] hint_level: {decision.get('hint_level')}")
+                                        print(f"[LOG] reason: {decision.get('reason')}")
+                                        
+                                        # 显示updated_question_states（如果有）
+                                        if updated_states:
+                                            print(f"[LOG] --- 本次返回的updated_question_states ---")
+                                            for question_id, new_state in updated_states.items():
+                                                old_state = self.question_states.get(question_id)
+                                                print(f"[LOG]   {question_id}:")
+                                                print(f"[LOG]     - last_action_type: {old_state.get('last_action_type') if old_state else None} -> {new_state.get('last_action_type')}")
+                                                print(f"[LOG]     - status: {old_state.get('status') if old_state else None} -> {new_state.get('status')}")
+                                                print(f"[LOG]     - hint_level: {old_state.get('hint_level') if old_state else None} -> {new_state.get('hint_level')}")
+                                                if new_state.get('last_action_time'):
+                                                    print(f"[LOG]     - last_action_time: {new_state.get('last_action_time')}")
+                                                if new_state.get('is_correct') is not None:
+                                                    print(f"[LOG]     - is_correct: {new_state.get('is_correct')}")
+                                                if new_state.get('error_analysis'):
+                                                    print(f"[LOG]     - error_analysis: {new_state.get('error_analysis')}")
+                                                if new_state.get('error_log'):
+                                                    print(f"[LOG]     - error_log: {new_state.get('error_log')}")
+                                        
+                                        # 输出当前全局决策状态
+                                        print(f"[LOG] --- 当前全局决策状态 (decision_states) ---")
+                                        if self.decision_states:
+                                            print(f"[LOG] decision_type: {self.decision_states.get('decision_type')}")
+                                            print(f"[LOG] target_question_id: {self.decision_states.get('target_question_id')}")
+                                            print(f"[LOG] projection_content: {self.decision_states.get('projection_content')}")
+                                            print(f"[LOG] hint_level: {self.decision_states.get('hint_level')}")
+                                            print(f"[LOG] reason: {self.decision_states.get('reason')}")
+                                        else:
+                                            print(f"[LOG] (空)")
+                                        
+                                        # 输出当前所有题目的全局状态
+                                        print(f"[LOG] --- 当前全局所有题目状态 (question_states) ---")
+                                        if self.question_states:
+                                            for q_id, q_state in self.question_states.items():
+                                                print(f"[LOG]   {q_id}:")
+                                                print(f"[LOG]     - hint_level: {q_state.get('hint_level')}")
+                                                print(f"[LOG]     - last_action_type: {q_state.get('last_action_type')}")
+                                                print(f"[LOG]     - status: {q_state.get('status')}")
+                                                print(f"[LOG]     - last_action_time: {q_state.get('last_action_time')}")
+                                                if q_state.get('is_correct') is not None:
+                                                    print(f"[LOG]     - is_correct: {q_state.get('is_correct')}")
+                                                if q_state.get('error_analysis'):
+                                                    print(f"[LOG]     - error_analysis: {q_state.get('error_analysis')}")
+                                        else:
+                                            print(f"[LOG] (空)")
+                                        
+                                        print(f"[LOG] ==========================================")
                             
-                            # 更新当前数据
-                            print("[LOG] 更新当前数据...")
+                            # 更新当前感知报告（用于绘制投影时获取最新感知数据）
                             with self.data_lock:
                                 self.current_perception_report = perception_report
-                                self.current_decision = decision
-                                if reasoning_feedback:
-                                    self.reasoning_feedback = reasoning_feedback
-                            print("[LOG] 分析完成")
+                                # 注意：decision_states已经在上面更新了，这里不需要再更新current_decision
                             
                         except Exception as e:
-                            print(f"[ERROR] 分析过程出错: {e}")
-                            print(f"[ERROR] 错误详情:")
                             traceback.print_exc()
                         finally:
                             self.last_analysis_time = time.time()
@@ -411,16 +579,16 @@ class AIProjectionLearningAssistant:
                     analysis_thread = threading.Thread(target=analyze_scene, daemon=True)
                     analysis_thread.start()
                 
-                # 获取当前数据
+                # 获取当前数据（使用全局维护的决策状态）
                 try:
                     with self.data_lock:
                         perception_report = self.current_perception_report
-                        decision = self.current_decision
+                        # 使用全局维护的决策状态，而不是临时的decision
+                        decision = self.decision_states.copy() if self.decision_states else None
                     
-                    # 绘制投影
+                    # 绘制投影（基于全局维护的决策状态）
                     display_frame = self.draw_projection(frame, perception_report, decision)
                 except Exception as e:
-                    print(f"[ERROR] 绘制投影出错: {e}")
                     traceback.print_exc()
                     display_frame = frame.copy()
                 
@@ -456,10 +624,8 @@ class AIProjectionLearningAssistant:
                             self.fullscreen = True
             
         except Exception as e:
-            print(f"[ERROR] 运行错误: {e}")
             traceback.print_exc()
         finally:
-            print("[LOG] 清理资源...")
             self.cleanup()
     
     def cleanup(self):
