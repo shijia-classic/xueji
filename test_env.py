@@ -14,10 +14,9 @@ try:
     load_dotenv()
     print("✓ 成功加载 .env 文件")
 except ImportError:
-    print("⚠️  未安装 python-dotenv，将只使用系统环境变量")
-    print("   建议运行: pip install python-dotenv")
+    print("⚠️  未安装 python-dotenv")
 except Exception as e:
-    print(f"⚠️  加载 .env 文件时出错: {e}")
+    print(f"⚠️  加载 .env 失败: {e}")
 
 # 检查 API Key
 api_key = os.getenv("DASHSCOPE_API_KEY", "")
@@ -41,14 +40,8 @@ if api_key:
     print("\n✓ 配置检查通过！可以运行 main.py")
     sys.exit(0)
 else:
-    print("✗ DASHSCOPE_API_KEY: 未设置")
-    print("\n请通过以下方式之一设置 API Key：")
-    print("\n方法一：创建 .env 文件")
-    print("  1. 在项目根目录创建 .env 文件")
-    print("  2. 添加内容：DASHSCOPE_API_KEY=your-api-key-here")
-    print("\n方法二：设置系统环境变量")
-    print("  macOS/Linux: export DASHSCOPE_API_KEY=your-api-key-here")
-    print("  Windows:     set DASHSCOPE_API_KEY=your-api-key-here")
-    print("\n获取API Key: https://www.alibabacloud.com/help/zh/model-studio/get-api-key")
+    print("✗ API Key未设置")
+    print("\n请创建 .env 文件并添加：DASHSCOPE_API_KEY=your-api-key-here")
+    print("或设置环境变量：export DASHSCOPE_API_KEY=your-api-key-here")
     sys.exit(1)
 
